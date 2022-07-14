@@ -20,7 +20,7 @@ pub trait SubmittableOracle {
 }
 
 #[pink::contract(env=PinkEnvironment)]
-mod easy_oracle {
+mod twitter_oracle {
     use super::pink;
     use super::SubmittableOracle;
     use pink::logger::{Level, Logger};
@@ -29,11 +29,13 @@ mod easy_oracle {
     use fat_utils::attestation;
     use ink_prelude::{
         string::{String, ToString},
+        vec,
         vec::Vec,
     };
     use ink_storage::traits::SpreadAllocate;
     use ink_storage::Mapping;
     use scale::{Decode, Encode};
+    use serde::Deserialize;
 
     use fat_badges::issuable::IssuableRef;
 
@@ -43,7 +45,7 @@ mod easy_oracle {
     #[ink(storage)]
     #[derive(SpreadAllocate)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
-    pub struct EasyOracle {
+    pub struct TwitterOracle {
         admin: AccountId,
         badge_contract_options: Option<(AccountId, u32)>,
         attestation_verifier: attestation::Verifier,
@@ -67,12 +69,13 @@ mod easy_oracle {
         UsernameAlreadyInUse,
         AccountAlreadyInUse,
         FailedToIssueBadge,
+        InvalidTweets,
     }
 
     /// Type alias for the contract's result type.
     pub type Result<T> = core::result::Result<T, Error>;
 
-    impl EasyOracle {
+    impl TwitterOracle {
         #[ink(constructor)]
         pub fn new() -> Self {
             // Create the attestation helpers
@@ -112,7 +115,7 @@ mod easy_oracle {
         #[ink(message)]
         pub fn redeem(&mut self, attestation: attestation::Attestation) -> Result<()> {
             // Verify the attestation
-            let data: GistQuote = self
+            let data: TweetQuote = self
                 .attestation_verifier
                 .verify_as(&attestation)
                 .ok_or(Error::InvalidSignature)?;
@@ -140,7 +143,7 @@ mod easy_oracle {
         }
     }
 
-    impl SubmittableOracle for EasyOracle {
+    impl SubmittableOracle for TwitterOracle {
         // Queries
 
         /// Attests a Github Gist by the raw file url. (Query only)
@@ -155,17 +158,29 @@ mod easy_oracle {
         #[ink(message)]
         fn attest(&self, url: String) -> core::result::Result<attestation::Attestation, Vec<u8>> {
             // Verify the URL
-            let gist_url = parse_gist_url(&url).map_err(|e| e.encode())?;
-            // Fetch the gist content
-            let resposne = http_get!(url);
+            let tweet_url = parse_tweet_url(&url).map_err(|e| e.encode())?;
+            // Fetch the tweet content
+            // TODO: Add bearer token to the http request -- curl "https://api.twitter.com/2/tweets?ids=1426724855672541191" -H "Authorization: Bearer $BEARER_TOKEN"
+
+            const BEARER_TOKEN: &str = "Bearer AAAAAAAAAAAAAAAAAAAAACXsegEAAAAAmmADAF97nZBWgu1JDKG8ALb6lf8%3DduplCmqITqrQcjsIkovyPPbsu5WY6GNrcjsamf61obQrkJbE44";
+            let headers: Vec<(String, String)> =
+                vec![("Authorization".into(), BEARER_TOKEN.into())];
+            let resposne = http_get!(url, headers);
             if resposne.status_code != 200 {
                 return Err(Error::RequestFailed.encode());
             }
-            let body = resposne.body;
+            let data: Vec<TweetData> = serde_json_core::from_slice(&resposne.body)
+                .map_err(|_| Error::InvalidTweets.encode())?
+                .0;
+            if !data.is_empty() {
+                return Err(Error::InvalidTweets.encode());
+            }
+            // TODO: multiple Tweets?
+            let tweet = data[0].text.clone();
             // Verify the claim and extract the account id
-            let account_id = extract_claim(&body).map_err(|e| e.encode())?;
-            let quote = GistQuote {
-                username: gist_url.username,
+            let account_id = extract_claim(tweet).map_err(|e| e.encode())?;
+            let quote = TweetQuote {
+                username: tweet_url.username,
                 account_id,
             };
             let result = self.attestation_generator.sign(quote);
@@ -184,40 +199,41 @@ mod easy_oracle {
         }
     }
 
+    #[derive(Deserialize, Debug)]
+    struct TweetData {
+        id: String,
+        text: String,
+    }
+
     #[derive(PartialEq, Eq, Debug)]
-    struct GistUrl {
-        username: String,
-        gist_id: String,
-        filename: String,
+    struct TweetURL {
+        // e.g. "https://twitter.com/FokChristopher/status/1546748557595930625"
+        username: String, // e.g. FokChristopher
+        tweet_id: String, // e.g. 1546748557595930625
     }
 
     #[derive(Clone, Encode, Decode, Debug)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
-    pub struct GistQuote {
+    pub struct TweetQuote {
         username: String,
         account_id: AccountId,
     }
 
-    /// Parses a Github Gist url.
-    ///
-    /// - Returns a parsed [GistUrl] struct if the input is a valid url;
-    /// - Otherwise returns an [Error].
-    fn parse_gist_url(url: &str) -> Result<GistUrl> {
+    fn parse_tweet_url(url: &str) -> Result<TweetURL> {
         let path = url
-            .strip_prefix("https://gist.githubusercontent.com/")
+            .strip_prefix("https://twitter.com/")
             .ok_or(Error::InvalidUrl)?;
-        let components: Vec<_> = path.split('/').collect();
-        if components.len() < 5 {
+        let components: Vec<_> = path.split('/').collect(); // e.g. Vec!["FokChristopher", "status", "1546748557595930625"]
+        if components.len() < 3 {
             return Err(Error::InvalidUrl);
         }
-        Ok(GistUrl {
+        Ok(TweetURL {
             username: components[0].to_string(),
-            gist_id: components[1].to_string(),
-            filename: components[4].to_string(),
+            tweet_id: components[2].to_string(),
         })
     }
 
-    const CLAIM_PREFIX: &str = "This gist is owned by address: 0x";
+    const CLAIM_PREFIX: &str = "This tweet is owned by address: 0x";
     const ADDRESS_LEN: usize = 64;
 
     /// Extracts the ownerhip of the gist from a claim in the gist body.
@@ -227,10 +243,9 @@ mod easy_oracle {
     ///
     /// - Returns a 256-bit `AccountId` representing the owner account if the claim is valid;
     /// - otherwise returns an [Error].
-    fn extract_claim(body: &[u8]) -> Result<AccountId> {
-        let body = String::from_utf8_lossy(body);
-        let pos = body.find(CLAIM_PREFIX).ok_or(Error::NoClaimFound)?;
-        let addr: String = body
+    fn extract_claim(tweet: String) -> Result<AccountId> {
+        let pos = tweet.find(CLAIM_PREFIX).ok_or(Error::NoClaimFound)?;
+        let addr: String = tweet
             .chars()
             .skip(pos)
             .skip(CLAIM_PREFIX.len())
@@ -262,22 +277,22 @@ mod easy_oracle {
 
         #[ink::test]
         fn can_parse_gist_url() {
-            let result = parse_gist_url("https://gist.githubusercontent.com/h4x3rotab/0cabeb528bdaf30e4cf741e26b714e04/raw/620f958fb92baba585a77c1854d68dc986803b4e/test%2520gist");
+            let result =
+                parse_tweet_url("https://twitter.com/FokChristopher/status/1546748557595930625");
             assert_eq!(
                 result,
-                Ok(GistUrl {
-                    username: "h4x3rotab".to_string(),
-                    gist_id: "0cabeb528bdaf30e4cf741e26b714e04".to_string(),
-                    filename: "test%2520gist".to_string(),
+                Ok(TweetURL {
+                    username: "FokChristopher".to_string(),
+                    tweet_id: "1546748557595930625".to_string()
                 })
             );
-            let err = parse_gist_url("http://example.com");
+            let err = parse_tweet_url("http://example.com");
             assert_eq!(err, Err(Error::InvalidUrl));
         }
 
         #[ink::test]
         fn can_decode_claim() {
-            let ok = extract_claim(b"...This gist is owned by address: 0x0123456789012345678901234567890123456789012345678901234567890123...");
+            let ok = extract_claim("...This tweet is owned by address: 0x0123456789012345678901234567890123456789012345678901234567890123...".to_string());
             assert_eq!(
                 ok,
                 decode_accountid_256(
@@ -286,15 +301,15 @@ mod easy_oracle {
             );
             // Bad cases
             assert_eq!(
-                extract_claim(b"This gist is owned by"),
+                extract_claim("This gist is owned by".to_string()),
                 Err(Error::NoClaimFound),
             );
             assert_eq!(
-                extract_claim(b"This gist is owned by address: 0xAB"),
+                extract_claim("This gist is owned by address: 0xAB".to_string()),
                 Err(Error::InvalidAddressLength),
             );
             assert_eq!(
-                extract_claim(b"This gist is owned by address: 0xXX23456789012345678901234567890123456789012345678901234567890123"),
+                extract_claim("This gist is owned by address: 0xXX23456789012345678901234567890123456789012345678901234567890123".to_string()),
                 Err(Error::InvalidAddress),
             );
         }
@@ -316,7 +331,7 @@ mod easy_oracle {
                 let badges = mock_issuable::deploy(fat_badges::FatBadges::new());
 
                 // Construct our contract (deployed by `accounts.alice` by default)
-                let contract = Addressable::create_native(1, EasyOracle::new(), stack);
+                let contract = Addressable::create_native(1, TwitterOracle::new(), stack);
 
                 // Create a badge and add the oracle contract as its issuer
                 let id = badges
@@ -341,7 +356,7 @@ mod easy_oracle {
                 assert!(result.is_ok());
 
                 let attestation = result.unwrap();
-                let data: GistQuote = Decode::decode(&mut &attestation.data[..]).unwrap();
+                let data: TweetQuote = Decode::decode(&mut &attestation.data[..]).unwrap();
                 assert_eq!(data.username, "h4x3rotab");
                 assert_eq!(data.account_id, accounts.alice);
 

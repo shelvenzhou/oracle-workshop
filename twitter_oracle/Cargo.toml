@@ -1,7 +1,7 @@
 [package]
-name = "easy_oracle"
+name = "twitter_oracle"
 version = "0.1.0"
-authors = ["Hang Yin <hangyin@phala.network>"]
+authors = ["Shelven Zhou <favoring.zhou49@gmail.com>"]
 edition = "2021"
 
 [dependencies]
@@ -22,11 +22,14 @@ hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
 fat_badges = { path = "../fat_badges", default-features = false, features = ["ink-as-dependency"] }
 fat_utils = { path = "../utils", default-features = false }
 
+serde = { version = "1.0.137", default-features = false, features = ["derive", "alloc"]}
+serde-json-core = { version = "0.4.0", default-features = false }
+
 [dev-dependencies]
 environmental = { path = "../utils/environmental", default-features = false }
 
 [lib]
-name = "easy_oracle"
+name = "twitter_oracle"
 path = "lib.rs"
 crate-type = [
 	# Used for normal contract Wasm blobs.
@@ -46,6 +49,8 @@ std = [
     "pink-extension/std",
     "fat_badges/std",
     "fat_utils/std",
+    "serde/std",
+    "serde-json-core/std",
 ]
 ink-as-dependency = []
 mockable = [

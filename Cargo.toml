@@ -5,7 +5,7 @@ members = [
     "fat_badges",
     "easy_oracle",
     "advanced_judger",
-    "twitter-oracle",
+    "twitter_oracle",
     "utils",
     "utils/environmental",
 ]
