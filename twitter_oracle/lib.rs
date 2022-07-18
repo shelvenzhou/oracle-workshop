@@ -1,6 +1,9 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![feature(trace_macros)]
 
+#[macro_use]
+extern crate alloc;
+
 use fat_utils::attestation;
 use ink_env::AccountId;
 use ink_lang as ink;
@@ -41,6 +44,10 @@ mod twitter_oracle {
 
     static LOGGER: Logger = Logger::with_max_level(Level::Info);
     pink::register_logger!(&LOGGER);
+
+    fn from_debug(e: impl core::fmt::Debug) -> Vec<u8> {
+        format!("{:?}", e).into_bytes()
+    }
 
     #[ink(storage)]
     #[derive(SpreadAllocate)]
@@ -170,7 +177,7 @@ mod twitter_oracle {
                 return Err(Error::RequestFailed.encode());
             }
             let data: Vec<TweetData> = serde_json_core::from_slice(&resposne.body)
-                .map_err(|_| Error::InvalidTweets.encode())?
+                .map_err(from_debug)?
                 .0;
             if !data.is_empty() {
                 return Err(Error::InvalidTweets.encode());
